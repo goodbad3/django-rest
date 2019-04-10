@@ -1,0 +1,329 @@
+创建一个新环境
+
+pip install django
+pip install djangorestframework
+pip install pygments  # 代码高亮插件
+
+https://www.django.cn/course/show-21.html
+
+
+我们需要将新建的snippetsapp和rest_frameworkapp添加到INSTALLED_APPS。让我们编辑tutorial/settings.py文件：
+INSTALLED_APPS = (
+    ...
+    'rest_framework',
+    'snippets.apps.SnippetsConfig',)
+
+
+
+创建一个modl
+.......................
+
+创建一个序列化类
+.......................
+
+使用ModelSerializers
+就像Django提供了Form类和ModelForm类一样，REST framework包括Serializer类和ModelSerializer类。
+
+''''''''''''''''''''''''''''''
+*******************************************************************************************************
+Django REST Framework教程:请求和响应
+
+''''''''''''''''''''''''''''''
+
+Django REST Framework教程:基于类的视图（CBV）
+
+使用混合（mixins）
+使用基于类视图的最大优势之一是它可以轻松地创建可复用的行为。
+到目前为止，我们使用的创建/获取/更新/删除操作和我们创建的任何基于模型的API视图非常相似。这些常见的行为是在REST框架的mixin类中实现的。
+让我们来看看我们是如何通过使用mixin类编写视图的。这是我们的views.py模块。
+
+
+我们将花点时间好好看下这里的具体实现方式。我们使用GenericAPIView构建了我们的视图，并且用上了ListModelMixin和CreateModelMixin。
+基类提供核心功能，而mixin类提供.list()和.create()操作。
+
+
+使用通用的基于类的视图
+通过使用mixin类，我们使用更少的代码重写了这些视图，但我们还可以再进一步。REST框架提供了一组已经混合好（mixed-in）的通用视图，我们可以使用它来简化我们的views.py模块。
+from snippets.models import Snippet
+from snippets.serializers import SnippetSerializer
+from rest_framework import generics
+
+class SnippetList(generics.ListCreateAPIView):
+    queryset = Snippet.objects.all()
+    serializer_class = SnippetSerializer
+
+class SnippetDetail(generics.RetrieveUpdateDestroyAPIView):
+    queryset = Snippet.objects.all()
+    serializer_class = SnippetSerializer
+
+
+*******************************************************************************************************
+Django REST Framework教程:认证和权限
+
+目前，我们的API对谁可以编辑或删除代码段没有任何限制。我们希望有更高级的行为，以确保：
+代码片段始终与创建者相关联。
+只有通过身份验证的用户可以创建片段。
+只有代码片段的创建者可以更新或删除它。
+未经身份验证的请求应具有完全只读访问权限。
+
+在我们的模型（model）中添加信息
+我们将对我们的Snippet模型类进行几次更改。首先，我们添加几个字段。其中一个字段将用于表示创建代码段的用户，另一个字段将用于存储代码的高亮显示的HTML内容。
+
+将以下两个字段添加到models.py文件中的Snippet模型中。
+owner = models.ForeignKey('auth.User', related_name='snippets', on_delete=models.CASCADE)
+highlighted = models.TextField()
+
+我们还需要确保在保存模型时，使用pygments代码高亮显示库填充要高亮显示的字段。
+我们需要导入额外的模块：
+from pygments.lexers import get_lexer_by_name
+from pygments.formatters.html import HtmlFormatter
+from pygments import highlight
+现在我们可以在我们的模型类中添加一个.save()方法：
+def save(self, *args, **kwargs):
+    """
+    使用`pygments`库创建一个高亮显示的HTML表示代码段。
+    """
+    lexer = get_lexer_by_name(self.language)
+    linenos = self.linenos and 'table' or False
+    options = self.title and {'title': self.title} or {}
+    formatter = HtmlFormatter(style=self.style, linenos=linenos,
+                              full=True, **options)
+    self.highlighted = highlight(self.code, lexer, formatter)
+    super(Snippet, self).save(*args, **kwargs)
+完成这些工作后，我们需要更新我们的数据库表。 通常这种情况我们会创建一个数据库迁移（migration）来实现这一点，但现在我们只是个教程示例，所以我们选择直接删除数据库并重新开始。
+
+
+
+
+为我们的用户模型添加路径
+
+现在我们已经创建了一些用户，我们最好在API中添加这些用户的表示。创建一个新的序列化器非常简单，在serializers.py文件中添加：
+
+from django.contrib.auth.models import User
+
+class UserSerializer(serializers.ModelSerializer):
+    snippets = serializers.PrimaryKeyRelatedField(many=True, queryset=Snippet.objects.all())
+
+    class Meta:
+        model = User
+        fields = ('id', 'username', 'snippets')
+因为'snippets' 在用户模型中是一个反向关联关系。在使用 ModelSerializer 类时它默认不会被包含，所以我们需要为它添加一个显式字段。
+
+我们还会在views.py中添加几个视图。我们只想将用户展示为只读视图，因此我们将使用ListAPIView和RetrieveAPIView通用的基于类的视图。
+............................................
+
+
+将Snippet和用户关联
+
+现在，如果我们创建了一个代码片段，并不能将创建该代码片段的用户与代码段实例相关联。用户不是作为序列化表示的一部分发送的，而是作为传入请求的属性。（译者注：user不在传过来的数据中，而是通过request.user获得）
+我们处理的方式是在我们的代码片段视图中重写一个.perform_create()方法，这样我们可以修改实例保存的方法，并处理传入请求或请求URL中隐含的任何信息。
+在SnippetList视图类中，添加以下方法：
+def perform_create(self, serializer):
+    serializer.save(owner=self.request.user)
+我们的序列化器的create()方法现在将被传递一个附加的'owner'字段以及来自请求的验证数据。
+
+
+更新我们的序列化器
+这些代码片段和创建它们的用户相关联
+owner = serializers.ReadOnlyField(source='owner.username')
+注意：确保你还将'owner',添加到内部Meta类的字段列表中。
+这个字段非常有趣。source参数控制哪个属性用于填充字段，并且可以指向序列化实例上的任何属性。它也可以采用如上所示点加下划线的方式，在这种情况下，它将以与Django模板语言一起使用的相似方式遍历给定的属性。
+我们添加的字段是无类型的ReadOnlyField类，区别于其他类型的字段（如CharField，BooleanField等）。无类型的ReadOnlyField始终是只读的，只能用于序列化表示，不能用于在反序列化时更新模型实例。我们也可以在这里使用CharField(read_only=True)
+
+
+添加视图所需的权限
+现在，代码片段与用户是相关联的，我们希望确保只有经过身份验证的用户才能创建，更新和删除代码片段。
+现在，代码片段与用户是相关联的，我们希望确保只有经过身份验证的用户才能创建，更新和删除代码片段。
+REST框架包括许多权限类，我们可以使用这些权限类来限制谁可以访问给定的视图。 在这种情况下，我们需要的是IsAuthenticatedOrReadOnly类，这将确保经过身份验证的请求获得读写访问权限，未经身份验证的请求将获得只读访问权限。
+首先要在视图模块中导入以下内容
+from rest_framework import permissions
+然后，将以下属性添加到SnippetList和SnippetDetail视图类中。
+permission_classes = (permissions.IsAuthenticatedOrReadOnly,)
+
+给Browsable API添加登陆
+urlpatterns += [
+    url(r'^api-auth/', include('rest_framework.urls',
+                               namespace='rest_framework')),
+]
+
+
+对象级别的权限
+我们希望所有的代码片段都可以被任何人看到，但也要确保只有创建代码片段的用户才能更新或删除它。
+为此，我们将需要创建一个自定义权限。
+在snippets app中，创建一个新文件permissions.py。
+from rest_framework import permissions
+
+class IsOwnerOrReadOnly(permissions.BasePermission):
+    """
+    自定义权限只允许对象的所有者编辑它。
+    """
+    def has_object_permission(self, request, view, obj):
+        # 读取权限允许任何请求，
+        # 所以我们总是允许GET，HEAD或OPTIONS请求。
+        if request.method in permissions.SAFE_METHODS:
+            return True
+
+        # 只有该snippet的所有者才允许写权限。
+        return obj.owner == request.user
+
+现在，我们可以通过在SnippetDetail视图类中编辑permission_classes属性将该自定义权限添加到我们的代码片段实例路径：
+permission_classes = (permissions.IsAuthenticatedOrReadOnly,
+                      IsOwnerOrReadOnly,)
+确保要先导入IsOwnerOrReadOnly类。
+from snippets.permissions import IsOwnerOrReadOnly
+现在，如果再次打开浏览器，你会发现如果你以代码片段创建者的身份登录的话，“DELETE”和“PUT”操作才会显示在代码片段实例路径上
+
+
+使用API进行身份验证
+现在因为我们在API上有一组权限，如果我们要编辑任何代码片段，我们都需要验证我们的请求。我们还没有设置任何身份验证类，所以应用的是默认的SessionAuthentication和BasicAuthentication。
+
+*******************************************************************************************************
+Django REST Framework教程:关系和超链接API
+目前我们的API中的关系是用主键表示的。我们将通过使用超链接来提高我们API的内部联系。
+
+为我们的API创建一个根路径
+现在我们有'snippets'和'users'的路径，但是我们的API没有一个入口点。我们将使用一个常规的基于函数的视图和我们前面介绍的@api_view装饰器创建一个。在你的snippets/views.py中添加：
+..................................
+
+为高亮显示的代码片段创建路径
+'''''''''''''''''''''''''''''''''''
+
+超链接我们的API
+HyperlinkedModelSerializer与ModelSerializer有以下区别：
+默认情况下不包括id字段。
+它包含一个url字段，使用HyperlinkedIdentityField。
+关联关系使用HyperlinkedRelatedField，而不是PrimaryKeyRelatedField。
+
+class SnippetSerializer(serializers.HyperlinkedModelSerializer):
+    owner = serializers.ReadOnlyField(source='owner.username')
+    highlight = serializers.HyperlinkedIdentityField(view_name='snippet-highlight', format='html')
+
+    class Meta:
+        model = Snippet
+        fields = ('url', 'id', 'highlight', 'owner',
+                  'title', 'code', 'linenos', 'language', 'style')
+
+
+class UserSerializer(serializers.HyperlinkedModelSerializer):
+    snippets = serializers.HyperlinkedRelatedField(many=True, view_name='snippet-detail', read_only=True)
+
+    class Meta:
+        model = User
+        fields = ('url', 'id', 'username', 'snippets')
+请注意，我们还添加了一个新的'highlight'字段。该字段与url字段的类型相同，不同之处在于它指向'snippet-highlight'url模式，而不是'snippet-detail'url模式。
+因为我们已经包含了格式后缀的URL，例如'.json'，我们还需要在highlight字段上指出任何格式后缀的超链接，它应该使用'.html'后缀。
+
+
+确保我们的URL模式被命名
+如果我们要使用超链接的API，那么需要确保为我们的URL模式命名。我们来看看我们需要命名的URL模式。
+我们API的根路径是指'user-list'和'snippet-list'。
+我们的代码片段序列化器包含一个指向'snippet-highlight'的字段。
+我们的用户序列化器包含一个指向'snippet-detail'的字段。
+我们的代码片段和用户序列化程序包括'url'字段，默认情况下将指向'{model_name}-detail'，在这个例子中就是'snippet-detail'和'user-detail'。
+将所有这些名称添加到我们的URLconf中后，最终我们的snippets/urls.py文件应该如下所示：
+from django.conf.urls import url, include
+from rest_framework.urlpatterns import format_suffix_patterns
+from snippets import views
+
+# API endpoints
+urlpatterns = format_suffix_patterns([
+    url(r'^$', views.api_root),
+    url(r'^snippets/$',
+        views.SnippetList.as_view(),
+        name='snippet-list'),
+    url(r'^snippets/(?P<pk>[0-9]+)/$',
+        views.SnippetDetail.as_view(),
+        name='snippet-detail'),
+    url(r'^snippets/(?P<pk>[0-9]+)/highlight/$',
+        views.SnippetHighlight.as_view(),
+        name='snippet-highlight'),
+    url(r'^users/$',
+        views.UserList.as_view(),
+        name='user-list'),
+    url(r'^users/(?P<pk>[0-9]+)/$',
+        views.UserDetail.as_view(),
+        name='user-detail')
+])
+
+# 可浏览API的登录和注销视图
+urlpatterns += [
+    url(r'^api-auth/', include('rest_framework.urls',
+                               namespace='rest_framework')),
+]
+
+
+添加分页
+REST_FRAMEWORK = {
+    'PAGE_SIZE': 10}
+
+
+
+****************************************************************************************************
+Django REST Framework教程:视图集和路由器
+
+使用ViewSets重构
+首先让我们将UserList和UserDetail视图重构为一个UserViewSet。我们可以删除这两个视图，并用一个类替换它们：
+from rest_framework import viewsets
+
+class UserViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    此视图自动提供`list`和`detail`操作。
+    """
+    queryset = User.objects.all()
+    serializer_class = UserSerializer
+这里，我们使用ReadOnlyModelViewSet类来自动提供默认的“只读”操作。我们仍然像使用常规视图那样设置queryset和serializer_class属性，但我们不再需要向两个不同的类提供相同的信息。
+
+首先让我们将UserList和UserDetail视图重构为一个UserViewSet。我们可以删除这两个视图，并用一个类替换它们：
+from rest_framework import viewsets
+
+class UserViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    此视图自动提供`list`和`detail`操作。
+    """
+    queryset = User.objects.all()
+    serializer_class = UserSerializer
+
+这里，我们使用ReadOnlyModelViewSet类来自动提供默认的“只读”操作。我们仍然像使用常规视图那样设置queryset和serializer_class属性，但我们不再需要向两个不同的类提供相同的信息。
+
+
+接下来，我们将替换SnippetList，SnippetDetail和SnippetHighlight视图类。我们可以删除三个视图，并再次用一个类替换它们。
+from rest_framework.decorators import detail_route
+
+class SnippetViewSet(viewsets.ModelViewSet):
+    """
+    此视图自动提供`list`，`create`，`retrieve`，`update`和`destroy`操作。
+
+    另外我们还提供了一个额外的`highlight`操作。
+    """
+    queryset = Snippet.objects.all()
+    serializer_class = SnippetSerializer
+    permission_classes = (permissions.IsAuthenticatedOrReadOnly,
+                          IsOwnerOrReadOnly,)
+
+    @detail_route(renderer_classes=[renderers.StaticHTMLRenderer])
+    def highlight(self, request, *args, **kwargs):
+        snippet = self.get_object()
+        return Response(snippet.highlighted)
+
+    def perform_create(self, serializer):
+        serializer.save(owner=self.request.user)
+这次我们使用了ModelViewSet类来获取完整的默认读写操作。
+
+
+请注意，我们还使用@detail_route装饰器创建一个名为highlight的自定义操作。这个装饰器可用于添加不符合标准create/update/delete样式的任何自定义路径。
+默认情况下，使用@detail_route装饰器的自定义操作将响应GET请求。如果我们想要一个响应POST请求的动作，我们可以使用methods参数。
+默认情况下，自定义操作的URL取决于方法名称本身。如果要更改URL的构造方式，可以为装饰器设置url_path关键字参数。
+
+明确地将ViewSets绑定到URL
+.......................................
+
+使用路由器
+
+
+
+****************************************************************************************************
+Django REST Framework教程:概要和客户端库
+
+
+
+****************************************************************************************************
